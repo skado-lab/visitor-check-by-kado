@@ -1,0 +1,784 @@
+<title>ビジター入金チェックくん</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=M+PLUS+1+Code:wght@400;500&display=swap">
+<style>
+/* Layout: 上で2つのCSVを入れ、要確認リスト、項目ごとの枠、照合の内訳と貼り付け用の文章。
+   色の方針：土台は白とグレー。ティファニーブルーは見出しの線・コピー・読み込み済みだけ。
+   状態（要対応・注意・参考・入金済）は濃い色の小さなラベルで示し、面を塗らない。 */
+:root {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --tint: #f6f8f9;
+  --fg: #1f2933;
+  --muted: #4b5866;
+  --faint: #8a96a3;
+  --line: #e1e6ea;
+  --accent: #0abab5;
+  --accent-strong: #0a8580;
+  --on-accent: #ffffff;
+  --orange: #f07c1b;
+  --orange-strong: #d96a0c;
+  --bad: #c62f2f;
+  --warn: #b25e00;
+  --info: #66758a;
+  --ok: #1d7a46;
+  --font-ui: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --font-code: "M PLUS 1 Code", "Osaka-Mono", "MS Gothic", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15191d; --surface: #1c2126; --tint: #232a30; --fg: #e9edf1; --muted: #b3bdc8; --faint: #7d8894; --line: #333c45;
+    --accent: #3fd0cb; --accent-strong: #2fb8b3; --on-accent: #0b1f1f;
+    --bad: #e5534b; --warn: #d9852b; --info: #7c8a9c; --ok: #3a9a63; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15191d; --surface: #1c2126; --tint: #232a30; --fg: #e9edf1; --muted: #b3bdc8; --faint: #7d8894; --line: #333c45;
+  --accent: #3fd0cb; --accent-strong: #2fb8b3; --on-accent: #0b1f1f;
+  --bad: #e5534b; --warn: #d9852b; --info: #7c8a9c; --ok: #3a9a63; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.65; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 48px; display: grid; gap: 22px; }
+header { border-left: 6px solid var(--accent); padding-left: 14px; }
+header h1 { font-size: 1.5rem; margin: 0; text-wrap: balance; letter-spacing: .02em; }
+header p { margin: 4px 0 0; color: var(--muted); }
+
+/* ファイル */
+.drops { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.drop {
+  border: 2px dashed var(--line); border-radius: 10px; background: var(--surface);
+  padding: 16px; display: grid; gap: 6px; cursor: pointer; transition: border-color .15s; position: relative;
+}
+.drop:hover, .drop.over, .drop:focus-within { border-color: var(--accent); }
+.drop .label { font-size: .78rem; letter-spacing: .06em; color: var(--muted); font-weight: 700; }
+.drop .name { font-weight: 700; word-break: break-all; }
+.drop .meta { font-size: .85rem; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.drop.loaded { border-style: solid; border-color: var(--accent); }
+.drop.loaded .name::before { content: "✓ "; color: var(--accent-strong); }
+.drop .pend { font-size: .72rem; font-weight: 700; padding: 1px 8px; border-radius: 4px; background: var(--orange); color: #ffffff; }
+
+/* 日付・反映 */
+.opts { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; }
+.opts label { display: grid; gap: 2px; font-size: .8rem; color: var(--muted); }
+.opts input { font: inherit; font-size: .95rem; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--fg); width: 150px; }
+.apply { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-left: auto; }
+#applyBtn { font-size: 1rem; padding: 9px 28px; background: var(--orange); color: #ffffff; }
+#applyBtn:not(:disabled):hover { background: var(--orange-strong); }
+#applyBtn:disabled { background: var(--tint); color: var(--faint); border: 1px solid var(--line); cursor: default; }
+#applyNote.pending { color: var(--orange-strong); font-weight: 700; }
+
+/* パネル */
+.main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 18px; align-items: start; }
+@media (max-width: 860px) { .main { grid-template-columns: 1fr; } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.panel h2 { font-size: 1.02rem; margin: 0; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 件数 */
+.counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-size: .8rem; font-weight: 500; padding: 2px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--fg); font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 6px; }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.chip.ok::before { background: var(--ok); }
+.chip.bad::before { background: var(--bad); }
+.chip.warn::before { background: var(--warn); }
+
+/* 状態ラベル：濃い色に白文字 */
+.tag { display: inline-block; font-size: .74rem; padding: 2px 8px; border-radius: 4px; font-weight: 700; white-space: nowrap; color: #ffffff; background: var(--info); line-height: 1.5; }
+.tag.ok { background: var(--ok); }
+.tag.bad { background: var(--bad); }
+.tag.warn { background: var(--warn); }
+.tag.info { background: var(--info); }
+
+/* 表 */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .86rem; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: .74rem; letter-spacing: .04em; color: var(--muted); font-weight: 700; white-space: nowrap; background: var(--tint); }
+td.st { white-space: nowrap; }
+.sub { color: var(--muted); font-size: .8rem; }
+
+/* 文章欄・ボタン */
+textarea {
+  width: 100%; min-height: 560px; resize: vertical; font-family: var(--font-code); font-size: .88rem; line-height: 1.75;
+  padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--tint); color: var(--fg);
+}
+textarea::placeholder { color: var(--faint); }
+button {
+  font: inherit; font-weight: 700; font-size: .9rem; padding: 7px 16px; border-radius: 6px; border: 0;
+  background: var(--accent-strong); color: var(--on-accent); cursor: pointer;
+}
+button.ghost { background: var(--surface); color: var(--fg); border: 1px solid var(--line); font-size: .8rem; padding: 4px 10px; font-weight: 500; }
+button.ghost:hover { border-color: var(--accent-strong); color: var(--accent-strong); }
+button:focus-visible, .opts input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.note { font-size: .8rem; color: var(--muted); margin: 0; }
+.rules { font-size: .84rem; color: var(--muted); }
+.rules summary { cursor: pointer; font-weight: 700; color: var(--fg); }
+.rules ul { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
+
+/* 要確認リスト：左の色線で重さを示す */
+.review { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.review li { display: grid; grid-template-columns: 8em minmax(0, 13em) minmax(0, 1fr); gap: 4px 14px; padding: 10px 12px; border: 1px solid var(--line); border-left: 4px solid var(--info); border-radius: 6px; align-items: start; background: var(--surface); }
+.review li.bad { border-left-color: var(--bad); }
+.review li.warn { border-left-color: var(--warn); }
+.review li.info { background: var(--tint); }
+.review li.emptyrow { display: block; border: 0; padding: 0; background: none; }
+.review .who { font-weight: 700; word-break: break-word; }
+.review .what { font-size: .9rem; }
+.review .what p { margin: 0; }
+.review .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.review li.info .what { color: var(--muted); }
+@media (max-width: 700px) { .review li { grid-template-columns: 1fr; } }
+.empty { color: var(--faint); font-size: .9rem; margin: 0; line-height: 1.8; }
+
+/* 項目ごとの枠 */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.card { border: 1px solid var(--line); border-top: 4px solid var(--line); border-radius: 10px; background: var(--surface); display: grid; align-content: start; min-width: 0; overflow: hidden; }
+.card.wide { grid-column: 1 / -1; }
+.card.hit { border-top-color: var(--bad); }
+.card.hit.soft { border-top-color: var(--warn); }
+.card h3 { margin: 0; font-size: .92rem; padding: 9px 14px; background: var(--tint); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.card h3 .n { font-size: .78rem; font-weight: 700; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.card.hit h3 .n { color: #ffffff; background: var(--bad); padding: 1px 9px; border-radius: 999px; }
+.card.hit.soft h3 .n { background: var(--warn); }
+.card ul { list-style: none; margin: 0; padding: 4px 14px 10px; display: grid; }
+.card.wide ul { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); column-gap: 20px; }
+.card li { padding: 6px 0; border-top: 1px solid var(--line); display: grid; gap: 1px; min-width: 0; }
+.card li:first-child { border-top: 0; }
+.card.wide li { border-top: 0; border-bottom: 1px solid var(--line); }
+.card li .nm { font-weight: 700; word-break: break-word; }
+.card li .nm .k { display: inline-block; font-size: .7rem; font-weight: 700; padding: 0 5px; margin-right: 6px; border-radius: 3px; border: 1px solid var(--muted); color: var(--muted); vertical-align: 2px; line-height: 1.5; }
+.card li .nm .k.g { border-color: var(--warn); background: var(--warn); color: #ffffff; }
+.card li .nm .inv { font-weight: 400; color: var(--muted); }
+.card .none { color: var(--faint); padding: 10px 14px; margin: 0; font-size: .88rem; }
+.card h3 .hint { display: block; font-size: .74rem; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.card.unpaid li .row2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.card.unpaid li .sub { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.exbtn { white-space: nowrap; flex-shrink: 0; font-size: .74rem; font-weight: 500; padding: 1px 10px; border-radius: 999px; background: var(--surface); color: var(--muted); border: 1px solid var(--line); }
+.exbtn:hover { border-color: var(--orange); color: var(--orange-strong); }
+.card.unpaid li.ex .who { text-decoration: line-through; color: var(--faint); }
+.card.unpaid li.ex .inv, .card.unpaid li.ex .k { opacity: .55; }
+.card.unpaid li.ex .sub { color: var(--orange-strong); font-weight: 700; }
+.card.unpaid li.ex .exbtn { color: var(--orange-strong); border-color: var(--orange); }
+.card .pend { font-size: .68rem; font-weight: 700; padding: 0 6px; border-radius: 3px; background: var(--orange); color: #ffffff; }
+.headbtns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toggle { font-size: .8rem; color: var(--muted); display: flex; gap: 4px; align-items: center; font-weight: 400; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>ビジター入金チェックくん</h1>
+    <p>参加者リストとPeatixの入金CSVを入れると、照合してスレッド用の文章を作ります。ファイルはこのブラウザ内だけで処理されます。</p>
+  </header>
+
+  <div class="drops">
+    <label class="drop" id="dropReg" tabindex="0">
+      <span class="label">① 参加者リスト（ビジター登録）</span>
+      <span class="name" id="regName">ファイルを選択 / ドロップ</span>
+      <span class="meta" id="regMeta">参加者リスト_from_….csv</span>
+      <input type="file" id="regFile" accept=".csv,text/csv">
+    </label>
+    <label class="drop" id="dropPay" tabindex="0">
+      <span class="label">② 入金リスト（Peatix）</span>
+      <span class="name" id="payName">ファイルを選択 / ドロップ</span>
+      <span class="meta" id="payMeta">BNI TRES STELLAS ….csv</span>
+      <input type="file" id="payFile" accept=".csv,text/csv">
+    </label>
+  </div>
+
+  <div class="opts">
+    <label for="optMeeting">定例会の日付<input id="optMeeting" placeholder="10/20"></label>
+    <label for="optAsOf">集計時点<input id="optAsOf" placeholder="10/13　14:41"></label>
+    <div class="apply">
+      <button type="button" id="applyBtn" disabled>反映</button>
+      <span class="note" id="applyNote">CSVを入れてから「反映」を押すと照合します。</span>
+    </div>
+  </div>
+
+  <section class="panel" id="reviewPanel">
+    <h2>要確認リスト
+      <span class="headbtns">
+        <label class="toggle" for="showInfo"><input type="checkbox" id="showInfo" checked>表記ゆれも表示</label>
+        <button type="button" class="ghost" id="copyReview">要確認リストをコピー</button>
+      </span>
+    </h2>
+    <ul class="review" id="review"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>項目ごとの確認 <span class="counts" id="sumCounts"></span></h2>
+    <div id="summary"></div>
+  </section>
+
+  <div class="main">
+    <section class="panel">
+      <h2>照合の内訳 <span class="counts" id="counts"></span></h2>
+      <div class="tablewrap"><table id="payTable"></table></div>
+      <details class="rules">
+        <summary>照合のルール</summary>
+        <ul>
+          <li>名前は空白・旧字（髙・﨑など）・長音・「さん／様」を無視します。ローマ字はカタカナに直し、姓名の順番が逆でも照合します。漢字の名前か読みのどちらかが一致すれば同一人物とみなします。</li>
+          <li>どちらも一致しないが1〜2文字違いの名前は、自動では一致にせず要確認リストに候補として出します。「同一人物として扱う」を押すと入金済みになります。</li>
+          <li><b>2重支払い</b>：同じビジターに入金が2件以上ある。</li>
+          <li><b>ビジター名不明</b>：支払った人が招待メンバー本人で、そのメンバーが登録したビジターがいる。そのビジターを記載し、未入金リストにも残します。</li>
+          <li><b>ビジター登録なし</b>：支払いに対応するビジターが参加者リストにいない。メンバー本人の支払いなら「メンバー〇〇さん n件」と書きます。</li>
+          <li><b>2重申込</b>：参加者リストに同じビジター・同じ招待者の申込が2回以上ある。</li>
+          <li><b>未入金</b>：入金が確認できない登録ビジター全員（上の項目に載った人も含む）。</li>
+        </ul>
+      </details>
+    </section>
+    <section class="panel">
+      <h2>スレッドに貼る文章 <button type="button" id="copyBtn">コピー</button></h2>
+      <textarea id="out" spellcheck="false" aria-label="生成された文章" placeholder="ここにスレッドに貼る文章が出ます。&#10;&#10;① 参加者リストと ② 入金リスト（Peatix）のCSVを入れて、「反映」を押してください。&#10;出てきた文章はここで直接書き換えてからコピーできます。"></textarea>
+      <p class="note">ここで直接書き換えてからコピーすることもできます。</p>
+    </section>
+  </div>
+</div>
+
+<script>
+
+const state = { reg: null, pay: null, payFileName: "", regFileName: "", accepted: new Set(), pending: {}, excluded: new Set(), exclDraft: null };
+const vkey = v => (v.nameKeys[0] || v.name) + "|" + norm(v.inviter);
+
+/* ---------- CSV ---------- */
+function decodeBuffer(buf) {
+  const b = new Uint8Array(buf);
+  if (b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder("utf-16le").decode(b);
+  if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder("utf-16be").decode(b);
+  let t = new TextDecoder("utf-8").decode(b);
+  if (t.includes("\uFFFD")) { try { t = new TextDecoder("shift_jis").decode(b); } catch (e) {} }
+  return t;
+}
+function parseCSV(text) {
+  text = text.replace(/^﻿/, "");
+  const firstLine = text.split(/\r?\n/)[0];
+  const d = firstLine.split("\t").length > firstLine.split(",").length ? "\t" : ",";
+  const rows = []; let row = [], f = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+      else f += c;
+    } else if (c === '"') q = true;
+    else if (c === d) { row.push(f); f = ""; }
+    else if (c === "\n") { row.push(f); rows.push(row); row = []; f = ""; }
+    else if (c !== "\r") f += c;
+  }
+  if (f !== "" || row.length) { row.push(f); rows.push(row); }
+  const head = (rows.shift() || []).map(h => h.trim());
+  return rows.filter(r => r.some(x => x.trim() !== "")).map(r => {
+    const o = {}; head.forEach((h, i) => o[h] = (r[i] || "").trim()); return o;
+  });
+}
+function kind(rows) {
+  const k = rows.length ? Object.keys(rows[0]) : [];
+  if (k.includes("チケット名") || k.includes("注文番号")) return "pay";
+  if (k.includes("参加種別") || k.includes("紹介者")) return "reg";
+  return null;
+}
+
+/* ---------- 名前の正規化 ---------- */
+const VARIANTS = { "髙": "高", "﨑": "崎", "嵜": "崎", "邊": "辺", "邉": "辺", "澤": "沢", "濵": "浜", "濱": "浜", "齊": "斉", "齋": "斎", "德": "徳", "槇": "槙", "國": "国", "廣": "広", "藏": "蔵", "冨": "富", "櫻": "桜", "龍": "竜", "瀨": "瀬", "眞": "真", "黑": "黒" };
+function norm(s) {
+  if (!s) return "";
+  let t = s.normalize("NFKC").replace(/[\s　・･.\-ー'’]/g, "");
+  t = t.replace(/(さん|様|さま|サン|サマ)$/, "");
+  t = t.replace(/[髙﨑嵜邊邉澤濵濱齊齋德槇國廣藏冨櫻龍瀨眞黑]/g, c => VARIANTS[c]);
+  t = t.replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60)); // ひらがな→カタカナ
+  return t.toLowerCase();
+}
+const plain = s => (s || "").normalize("NFKC").replace(/[\s　]/g, "");
+const hasKanji = s => /[一-鿿㐀-䶿]/.test(s || "");
+const isLatin = s => { const t = (s || "").normalize("NFKC").trim(); return /[a-z]/i.test(t) && /^[a-z\s.\-'’]+$/i.test(t); };
+function md(iso) { const m = (iso || "").match(/\d{4}-(\d{2})-(\d{2})/) || (iso || "").match(/\d{4}\/(\d{1,2})\/(\d{1,2})/); return m ? `${+m[1]}/${+m[2]}` : ""; }
+
+/* ローマ字 → カタカナ */
+const ROMA = (() => {
+  const m = {}, v = "aiueo";
+  const base = { "": "アイウエオ", k: "カキクケコ", g: "ガギグゲゴ", s: "サシスセソ", z: "ザジズゼゾ", t: "タチツテト", d: "ダヂヅデド", n: "ナニヌネノ", h: "ハヒフヘホ", b: "バビブベボ", p: "パピプペポ", m: "マミムメモ", y: "ヤイユエヨ", r: "ラリルレロ", w: "ワイウエヲ", v: "バビブベボ", l: "ラリルレロ" };
+  for (const [c, ks] of Object.entries(base)) [...ks].forEach((k, i) => m[c + v[i]] = k);
+  Object.assign(m, { shi: "シ", chi: "チ", tsu: "ツ", fu: "フ", ji: "ジ", fa: "ファ", fi: "フィ", fe: "フェ", fo: "フォ", ti: "ティ", di: "ディ", je: "ジェ", she: "シェ", che: "チェ", wo: "ヲ" });
+  const yo = { ky: "キ", gy: "ギ", sh: "シ", j: "ジ", ch: "チ", ny: "ニ", hy: "ヒ", by: "ビ", py: "ピ", my: "ミ", ry: "リ", sy: "シ", zy: "ジ", ty: "チ", cy: "チ", jy: "ジ", dy: "ヂ" };
+  for (const [c, k] of Object.entries(yo)) { m[c + "a"] = k + "ャ"; m[c + "u"] = k + "ュ"; m[c + "o"] = k + "ョ"; }
+  return m;
+})();
+function romaToKana(s) {
+  s = s.normalize("NFKC").toLowerCase().replace(/[^a-z]/g, "");
+  let out = "", i = 0;
+  while (i < s.length) {
+    const c = s[i], n = s[i + 1];
+    if (c === "n" && (n === undefined || !"aiueoy".includes(n))) { out += "ン"; i++; continue; }
+    if (c === "m" && n && "bmp".includes(n)) { out += "ン"; i++; continue; }
+    if (n === c && !"aiueon".includes(c)) { out += "ッ"; i++; continue; }
+    if (c === "t" && n === "c") { out += "ッ"; i++; continue; }
+    let hit = false;
+    for (const L of [3, 2, 1]) { const seg = s.substr(i, L); if (ROMA[seg]) { out += ROMA[seg]; i += L; hit = true; break; } }
+    if (!hit) i++;
+  }
+  return out;
+}
+/* カタカナ → ローマ字（ヘボン式） */
+const KANA2ROMA = (() => {
+  const m = { "シ": "shi", "チ": "chi", "ツ": "tsu", "フ": "fu", "ジ": "ji", "ヂ": "ji", "ヅ": "zu", "ヲ": "o", "ン": "n" };
+  for (const [r, k] of Object.entries(ROMA)) if (!(k in m) && !/^[lv]/.test(r)) m[k] = r;
+  return m;
+})();
+function kanaToRoma(s) {
+  let out = "", dbl = false;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "ッ") { dbl = true; continue; }
+    let r = KANA2ROMA[s.substr(i, 2)];
+    if (r) i++; else r = KANA2ROMA[s[i]];
+    if (r === undefined) return "";
+    if (dbl) { r = (r.startsWith("ch") ? "t" : r[0]) + r; dbl = false; }
+    out += r;
+  }
+  return out;
+}
+const looseRoma = r => r.replace(/ou|oo/g, "o").replace(/uu/g, "u").replace(/nn/g, "n").replace(/h(?=[^aiueoy]|$)/g, "");
+/* 名前から照合用のキーを作る（漢字・読み・ローマ字、姓名逆順も） */
+function nameKeys(...strs) {
+  const keys = new Set();
+  strs.forEach(s => {
+    if (!s) return;
+    const t = s.normalize("NFKC").trim();
+    const parts = t.split(/[\s　]+/).filter(Boolean);
+    keys.add(norm(t));
+    if (parts.length > 1) keys.add(norm(parts.slice().reverse().join("")));
+    if (isLatin(t)) {
+      const kp = parts.map(romaToKana);
+      keys.add(norm(kp.join("")));
+      if (kp.length > 1) keys.add(norm(kp.slice().reverse().join("")));
+    }
+  });
+  // ローマ字でも比べる（Kenichi Sato と さとう けんいち など）
+  [...keys].forEach(k => {
+    const r = /^[a-z]+$/.test(k) ? k : (/^[\u30A0-\u30FF]+$/.test(k) ? kanaToRoma(k) : "");
+    if (r) { keys.add(r); keys.add(looseRoma(r)); }
+  });
+  // 伸ばす音のゆれ（サトウ／サト、オオノ／オノ）も同じとみなす
+  [...keys].forEach(k => keys.add(k.replace(/([オコソトノホモヨロゴゾドボポョ])[ウオ]/g, "$1")));
+  keys.delete("");
+  return [...keys];
+}
+function lev(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 9;
+  const d = [...Array(b.length + 1).keys()];
+  for (let i = 1; i <= a.length; i++) {
+    let p = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, p + (a[i - 1] === b[j - 1] ? 0 : 1)); p = t; }
+  }
+  return d[b.length];
+}
+/* 似ている名前か：1文字違い（長い名前なら2文字違い）まで */
+function similar(ak, bk) {
+  let best = null;
+  ak.forEach(a => bk.forEach(b => {
+    const L = Math.min(a.length, b.length); if (L < 3) return;
+    const d = lev(a, b), lim = L >= 7 ? 2 : 1;
+    if (d > 0 && d <= lim && (!best || d < best.d)) best = { d, a, b };
+  }));
+  return best;
+}
+const sameInviter = (a, b) => { const x = norm(a), y = norm(b); return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x)); };
+
+/* ---------- 照合 ---------- */
+function analyze(reg, pay) {
+  const visitors = reg.map((r, i) => ({
+    i, name: plain(r["お名前"]), furi: (r["ふりがな"] || "").trim(), inviter: plain(r["紹介者"]), type: r["参加種別"] || "",
+    nameKeys: nameKeys(r["お名前"]), furiKeys: nameKeys(r["ふりがな"]), pays: []
+  }));
+  visitors.forEach(v => v.keys = [...new Set([...v.nameKeys, ...v.furiKeys])]);
+  const memberKeys = new Map();
+  visitors.forEach(v => nameKeys(v.inviter).forEach(k => memberKeys.set(k, v.inviter)));
+
+  const payments = pay.map((p, idx) => {
+    const disp = p["表示名"] || "", kana = p["名前"] || "", inv = p["招待者（メンバー）のお名前"] || p["招待者"] || "";
+    return {
+      idx, raw: p, disp: plain(disp), dispRaw: disp.trim(), kana: kana.trim(), inviterRaw: plain(inv), date: md(p["申込日"]),
+      count: parseInt(p["枚数"] || "1", 10) || 1, memo: (p["繋がりたい人"] || "").replace(/\s+/g, " ").trim(),
+      cancelled: /キャンセル|cancel/i.test(p["ステータス"] || ""),
+      dispKeys: nameKeys(disp), kanaKeys: nameKeys(kana)
+    };
+  }).filter(p => !p.cancelled);
+  payments.forEach(p => p.keys = [...new Set([...p.dispKeys, ...p.kanaKeys])]);
+  const inviterNames = [...new Set(visitors.map(v => v.inviter).filter(Boolean))];
+  payments.forEach(p => {
+    const hit = p.inviterRaw ? inviterNames.filter(n => sameInviter(n, p.inviterRaw)) : [];
+    p.inviterFull = hit.length === 1 ? hit[0] : p.inviterRaw;
+  });
+
+  const result = { excluded: [], dupPay: [], unknownName: [], noReg: [], memberPays: [], memberNoReg: new Map(), dupReg: [], unpaid: [] };
+  const review = [];
+
+  const attach = (p, v, how) => { v.pays.push(p); p.status = "ok"; p.visitor = p.visitor || v; (p.visitors = p.visitors || []).push(v); p.how = how; };
+
+  payments.forEach(p => {
+    // 手動で同一人物にしたもの
+    const acc = [...state.accepted].find(k => k.startsWith(p.idx + ":"));
+    if (acc) { const v = visitors[+acc.split(":")[1]]; if (v) { attach(p, v, "manual"); return; } }
+
+    const hits = visitors.filter(v => p.keys.some(k => v.keys.includes(k)));
+    if (hits.length) {
+      let v = hits[0];
+      if (hits.length > 1) v = hits.find(h => sameInviter(h.inviter, p.inviterRaw) && !h.pays.length) || hits.find(h => !h.pays.length) || hits[0];
+      attach(p, v, "exact");
+      return;
+    }
+    const memberName = p.keys.map(k => memberKeys.get(k)).find(Boolean) || ((norm(p.disp) && norm(p.disp) === norm(p.inviterRaw)) ? p.disp : null);
+    if (memberName) {
+      const theirs = visitors.filter(v => norm(v.inviter) === norm(memberName));
+      p.member = memberName;
+      if (theirs.length) { p.status = "unknown"; p.candidates = theirs; result.unknownName.push(p); }
+      else { p.status = "memberNoReg"; result.memberPays.push(p); result.memberNoReg.set(memberName, (result.memberNoReg.get(memberName) || 0) + p.count); }
+      return;
+    }
+    p.status = "noReg"; result.noReg.push(p);
+  });
+
+  // メンバー本人の入金：誰の分か決まるなら入金済みにする
+  const byMember = new Map();
+  result.unknownName.forEach(p => { if (!byMember.has(p.member)) byMember.set(p.member, []); byMember.get(p.member).push(p); });
+  const namedIn = p => { const memo = norm(p.memo); return p.candidates.filter(v => v.nameKeys.some(k => k.length >= 2 && memo.includes(k))); };
+  const remain = [];
+  byMember.forEach(ps => {
+    // 備考に名前が1人だけ書いてあれば、その人の分
+    ps.forEach(p => { const nm = namedIn(p); if (nm.length === 1) attach(p, nm[0], "memo"); });
+    let rest = ps.filter(p => !p.visitor);
+    if (!rest.length) return;
+    const unpaidC = rest[0].candidates.filter(v => !v.pays.length);
+    const tickets = rest.reduce((s, p) => s + p.count, 0);
+    if (unpaidC.length && tickets >= unpaidC.length) {
+      // 入金の枚数で未入金の招待ビジター全員をまかなえる → 全員入金済み
+      let i = 0;
+      rest.forEach(p => { for (let c = 0; c < p.count && i < unpaidC.length; c++) attach(p, unpaidC[i++], "member"); });
+      rest = rest.filter(p => !p.visitor);
+      // 余った入金は「招待ビジターの登録なし」
+      rest.forEach(p => { p.status = "memberNoReg"; result.memberPays.push(p); result.memberNoReg.set(p.member, (result.memberNoReg.get(p.member) || 0) + p.count); });
+      return;
+    }
+    if (!unpaidC.length) {
+      // 招待ビジターは全員入金済み → この入金は登録なし扱い
+      rest.forEach(p => { p.status = "memberNoReg"; result.memberPays.push(p); result.memberNoReg.set(p.member, (result.memberNoReg.get(p.member) || 0) + p.count); });
+      return;
+    }
+    rest.forEach(p => { const nm = namedIn(p); p.shown = nm.length ? nm : unpaidC; remain.push(p); });
+  });
+  result.unknownName = remain;
+
+  // 登録なしの入金に、似た名前の未入金ビジターを探す
+  result.noReg.forEach(p => {
+    p.fuzzy = visitors.filter(v => !v.pays.length).map(v => {
+      const s = similar(p.keys, v.keys); return s ? { v, s } : null;
+    }).filter(Boolean).sort((a, b) => a.s.d - b.s.d).slice(0, 3);
+  });
+
+  visitors.forEach(v => {
+    if (v.pays.length > 1) { result.dupPay.push(v); v.pays.forEach((p, i) => { if (i > 0) p.status = "dup"; }); }
+    if (!v.pays.length) { v.vk = vkey(v); (state.excluded.has(v.vk) && !/ゲスト/.test(v.type) ? result.excluded : result.unpaid).push(v); }
+  });
+  const seen = new Map();
+  visitors.forEach(v => {
+    if (!v.nameKeys[0]) return;
+    const k = v.nameKeys[0] + "|" + norm(v.inviter);
+    if (!seen.has(k)) seen.set(k, []); seen.get(k).push(v);
+  });
+  seen.forEach(list => { if (list.length > 1) result.dupReg.push(list); });
+
+  // （ビジター名不明の候補は上で決定済み）
+
+  /* ---------- 要確認リスト ---------- */
+  const dispName = p => p.disp || p.kana;
+  result.dupReg.forEach(list => review.push({
+    level: "bad", label: "2重申込", who: `${list[0].name}（${list[0].inviter}）`,
+    note: `参加者リストに同じ申込が${list.length}件あります。${list[0].inviter}さんに、どちらかを取り消すか確認してください。`
+  }));
+  result.dupPay.forEach(v => review.push({
+    level: "bad", label: "2重支払い", who: `${v.name}（${v.inviter}）`,
+    note: `Peatixで${v.pays.length}回支払われています（${v.pays.map(p => p.date + "入金").join("、")}）。${v.inviter}さんに、返金にするか、別のビジターの分か確認してください。`
+  }));
+  const mpGroups = new Map();
+  result.memberPays.forEach(p => { if (!mpGroups.has(p.member)) mpGroups.set(p.member, []); mpGroups.get(p.member).push(p); });
+  [...mpGroups.values()].map(ps => Object.assign({}, ps[0], { date: ps.map(x => x.date).join("・") + (ps.length > 1 ? `（${ps.length}件）` : ""), memo: ps.map(x => x.memo).filter(Boolean).join(" ／ ") })).forEach(p => review.push({
+    level: "bad", label: "登録なし", who: `メンバー ${p.member}`,
+    note: `${p.member}さんご本人の名前で${p.date}に入金がありますが、${p.member}さんが招待したビジターは参加者リストにいません。${p.member}さんに、誰の分か・ビジター登録をしたかを確認してください。` + (p.memo ? `（Peatixの備考：「${p.memo}」）` : "")
+  }));
+  result.unknownName.forEach(p => review.push({
+    level: "warn", label: "ビジター名不明", who: `メンバー ${p.member}`,
+    note: `${p.member}さんご本人の名前で${p.date}に入金があります。${p.member}さんの招待ビジター（${p.candidates.map(v => v.name).join("・")}）のうち誰の分か、${p.member}さんに確認してください。` + (p.memo ? `（Peatixの備考：「${p.memo}」）` : "")
+  }));
+  result.noReg.forEach(p => {
+    const inv = p.inviterFull;
+    const item = {
+      level: "bad", label: "登録なし", who: `${dispName(p)}（${inv || "招待者未記入"}）`,
+      note: `${p.date}に入金がありますが、参加者リストに登録がありません。${inv ? inv + "さんに" : "招待メンバーに"}ビジター登録をしたか確認してください。`,
+      actions: []
+    };
+    p.fuzzy.forEach(({ v, s }) => {
+      item.note += ` 参加者リストの「${v.name}（${v.inviter}）」と名前が${s.d}文字違いです。同じ人なら「同一人物として扱う」を押してください。`;
+      item.actions.push({ label: `${v.name}さんと同一人物として扱う`, key: `${p.idx}:${v.i}` });
+    });
+    review.push(item);
+  });
+  payments.filter(p => p.visitor).forEach(p => {
+    const v = p.visitor;
+    if (p.how === "member" || p.how === "memo") {
+      const names = p.visitors.map(x => x.name).join("・");
+      review.push({ level: "info", label: "メンバーが支払い", who: `${names}（${v.inviter}）`, note: p.how === "memo"
+        ? `${p.member}さんご本人の名前で${p.date}に入金があり、Peatixの備考に「${p.memo}」とあるので、${names}さんの分として入金済みにしています。`
+        : `${p.member}さんご本人の名前で${p.date}に入金${p.count > 1 ? `（${p.count}枚）` : ""}があり、入金の数と${p.member}さんの未入金の招待ビジターの数が合うので、${names}さんの分として入金済みにしています。違う場合は${p.member}さんに確認してください。` });
+      return;
+    }
+    if (p.how === "manual") {
+      review.push({ level: "info", label: "手動で一致", who: `${v.name}（${v.inviter}）`, note: `Peatixの「${dispName(p)}」を同一人物として扱っています。`, actions: [{ label: "取り消す", key: `${p.idx}:${v.i}`, undo: true }] });
+      return;
+    }
+    if (hasKanji(p.inviterRaw) && hasKanji(v.inviter) && !sameInviter(p.inviterRaw, v.inviter)) {
+      review.push({ level: "warn", label: "招待者が違う", who: `${v.name}`, note: `参加者リストの招待者は「${v.inviter}」、Peatixでは「${p.inviterRaw}」になっています。どちらが正しいか、${v.inviter}さんか${p.inviterRaw}さんに確認してください。入金は済みとして扱っています。` });
+    }
+    const kanaHit = p.kanaKeys.some(k => v.furiKeys.includes(k) || v.nameKeys.includes(k));
+    const dispHit = p.dispKeys.some(k => v.keys.includes(k));
+    if (p.kana && v.furi && !kanaHit && !isLatin(p.kana)) {
+      review.push({ level: "info", label: "読みが違う", who: `${v.name}（${v.inviter}）`, note: `参加者リストのふりがなは「${v.furi}」、Peatixの名前は「${p.kana}」です。Peatixの表示名「${p.dispRaw}」が一致したので入金済みにしています。ふりがなの誤字か、旧姓などで登録した可能性があります。` });
+    }
+    if (hasKanji(p.dispRaw) && !dispHit) {
+      review.push({ level: "info", label: "漢字が違う", who: `${v.name}（${v.inviter}）`, note: `参加者リストの名前は「${v.name}」、Peatixの表示名は「${p.disp}」です。読みが一致したので入金済みにしています。どちらかの漢字の誤りか確認してください。` });
+    }
+  });
+
+  return { visitors, payments, result, review };
+}
+
+/* ---------- 文章 ---------- */
+const toZen = n => String(n).replace(/[0-9]/g, d => String.fromCharCode(d.charCodeAt(0) + 0xFEE0));
+function compose(a, meeting, asOf) {
+  const { result: r } = a;
+  const L = [];
+  const tag = v => (/ゲスト/.test(v.type) ? "【ゲ】" : "【ビ】");
+  L.push(`${meeting}　定例会　ビジター様入金確認（${asOf}現在）`);
+  L.push(`【入金があるが、ビジター登録なし】（ビジター：招待者）※敬称略`);
+  L.push(`※招待メンバーのお名前を、お知らせください。`);
+  r.memberNoReg.forEach((n, m) => L.push(`：メンバー${m}さん${toZen(n)}件`));
+  r.noReg.forEach(p => L.push(`${p.disp || p.kana}（${p.inviterFull || "招待者不明"}）　${p.date}入金`));
+  L.push(`【2重申込】`);
+  r.dupReg.forEach(list => list.forEach(v => L.push(`${v.name}（${v.inviter}）`)));
+  L.push(`【2重支払い】`);
+  r.dupPay.forEach(v => {
+    L.push(`${v.name}（${v.inviter}）`);
+    L.push(`　${v.pays[0].date}入金` + v.pays.slice(1).map(p => `（${p.date}入金）`).join(""));
+  });
+  L.push(`【入金があるが、ビジター名不明】（ビジター：招待者）※敬称略`);
+  L.push(`※ビジター様のお名前をお知らせください。`);
+  const seenU = new Set();
+  r.unknownName.forEach(p => {
+    p.shown.forEach(v => { if (!seenU.has(v.i)) { seenU.add(v.i); L.push(`${v.name}（${v.inviter}）`); } });
+  });
+  L.push(`【未入金リスト】（ビジター：招待者）※敬称略`);
+  L.push(`・未入金の方　は、日曜日１２時までの入金をお願いいたします。`);
+  L.push(`★★ご入金いただけましたら、このスレッドに、必ずご連絡お願いいたします★★`);
+  L.push(`・お支払いはPeatixとなります。`);
+  L.push(`⇒ https://peatix.com/group/7234530`);
+  L.push(`【定例会ZOOM参加費】`);
+  L.push(`ビジター様：1,000円`);
+  L.push(`ゲ ス ト様：5,000円`);
+  r.unpaid.forEach(v => L.push(`${tag(v)}${v.name}(${v.inviter})×`));
+  return L.join("\n");
+}
+
+/* ---------- 画面 ---------- */
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let last = null;
+
+function defaults() {
+  if (state.reg && state.reg.length) {
+    const d = md(state.reg[0]["日付"]); if (d && !$("optMeeting").dataset.touched) $("optMeeting").value = d;
+  }
+  const m = state.payFileName.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})_(\d{2})/);
+  if (!$("optAsOf").dataset.touched) {
+    if (m) $("optAsOf").value = `${+m[2]}/${+m[3]}　${m[4]}:${m[5]}`;
+    else { const n = new Date(); $("optAsOf").value = `${n.getMonth() + 1}/${n.getDate()}　${String(n.getHours()).padStart(2, "0")}:${String(n.getMinutes()).padStart(2, "0")}`; }
+  }
+}
+
+function renderReview(items) {
+  const showInfo = $("showInfo").checked;
+  const order = { bad: 0, warn: 1, info: 2 };
+  const list = items.filter(it => showInfo || it.level !== "info").sort((a, b) => order[a.level] - order[b.level]);
+  if (!list.length) { $("review").innerHTML = `<li class="emptyrow"><p class="empty">確認が必要な項目はありません。</p></li>`; return; }
+  $("review").innerHTML = list.map(it => `<li class="${it.level}">
+    <span><span class="tag ${it.level}">${esc(it.label)}</span></span>
+    <span class="who">${esc(it.who)}</span>
+    <div class="what"><p>${esc(it.note)}</p>${it.actions && it.actions.length ? `<div class="acts">${it.actions.map(a => `<button type="button" class="ghost" data-key="${esc(a.key)}" data-undo="${a.undo ? 1 : 0}">${esc(a.label)}</button>`).join("")}</div>` : ""}</div>
+  </li>`).join("");
+}
+
+/* 未入金リストの枠：1人ずつ「除外」を切り替えられる。文章には「反映」で反映 */
+function unpaidCard(a) {
+  const draft = state.exclDraft || state.excluded;
+  const all = [...a.result.unpaid, ...a.result.excluded].sort((x, y) => x.i - y.i);
+  const nUnpaid = all.filter(v => !draft.has(v.vk)).length, nEx = all.length - nUnpaid;
+  const items = all.map(v => {
+    const ex = draft.has(v.vk), changed = ex !== state.excluded.has(v.vk), g = /ゲスト/.test(v.type);
+    return `<li class="${ex ? "ex" : ""}">
+      <span class="nm"><span class="k${g ? " g" : ""}">${g ? "ゲ" : "ビ"}</span><span class="who">${esc(v.name)}</span><span class="inv">（${esc(v.inviter)}）</span></span>
+      <span class="row2"><span class="sub">${ex ? "メインプレゼン招待のため除外" : (g ? "ゲスト 5,000円" : "ビジター 1,000円")}${changed ? `<span class="pend">未反映</span>` : ""}</span>
+      ${g ? "" : `<button type="button" class="exbtn" data-vk="${esc(v.vk)}" aria-pressed="${ex}">${ex ? "戻す" : "除外"}</button>`}</span>
+    </li>`;
+  }).join("");
+  return `<div class="card wide unpaid${nUnpaid ? " hit" : ""}">
+    <h3><span>【未入金リスト】<span class="hint">メインプレゼンの方が招待したビジターは「除外」を押して「反映」（ゲストは参加費がかかるので除外できません）</span></span><span class="n">${nUnpaid ? nUnpaid + "件" : "なし"}${nEx ? `　除外 ${nEx}名` : ""}</span></h3>
+    ${all.length ? `<ul>${items}</ul>` : `<p class="none">該当なし</p>`}
+  </div>`;
+}
+
+function renderSummary(a) {
+  const r = a.result, secs = [];
+  const kindOf = v => (/ゲスト/.test(v.type) ? "ゲ" : "ビ");
+  secs.push({ title: "入金があるが、ビジター登録なし", bad: true, rows: [
+    ...[...r.memberNoReg].map(([m, n]) => ["", `メンバー ${m}さん`, "本人", `本人名義の入金 ${n}件・招待ビジターの登録なし`]),
+    ...r.noReg.map(p => ["", p.disp || p.kana, p.inviterFull || "（未記入）", `${p.date}入金`])
+  ] });
+  secs.push({ title: "2重申込", bad: true, rows: r.dupReg.flatMap(list => list.map((v, i) => [kindOf(v), v.name, v.inviter, `同じ申込 ${list.length}件中の${i + 1}件目`])) });
+  secs.push({ title: "2重支払い", bad: true, rows: r.dupPay.map(v => [kindOf(v), v.name, v.inviter, v.pays.map(p => p.date + "入金").join("・")]) });
+  const seenU = new Set();
+  secs.push({ title: "入金があるが、ビジター名不明", soft: true, rows: r.unknownName.flatMap(p => p.shown.filter(v => !seenU.has(v.i) && seenU.add(v.i)).map(v => [kindOf(v), v.name, v.inviter, `${p.member}さんが${p.date}に入金・誰の分か不明`])) });
+  $("summary").innerHTML = `<div class="cards">${secs.map(s => `<div class="card${s.rows.length ? " hit" : ""}${s.soft ? " soft" : ""}${s.wide ? " wide" : ""}">
+    <h3><span>【${esc(s.title)}】</span><span class="n">${s.rows.length ? s.rows.length + "件" : "なし"}</span></h3>
+    ${s.rows.length ? `<ul>${s.rows.map(c => `<li><span class="nm">${c[0] ? `<span class="k${c[0] === "ゲ" ? " g" : ""}">${esc(c[0])}</span>` : ""}${esc(c[1])}<span class="inv">（${esc(c[2])}）</span></span><span class="sub">${esc(c[3])}</span></li>`).join("")}</ul>` : `<p class="none">該当なし</p>`}
+  </div>`).join("")}${unpaidCard(a)}</div>`;
+  const paid = a.visitors.filter(v => v.pays.length).length;
+  $("sumCounts").innerHTML = `<span class="chip">登録 ${a.visitors.length}名</span><span class="chip ok">入金済 ${paid}名</span><span class="chip bad">未入金 ${r.unpaid.length}名</span>` + (r.excluded.length ? `<span class="chip">メインプレゼン招待で除外 ${r.excluded.length}名</span>` : "");
+}
+
+function render() {
+  if (!state.reg || !state.pay) {
+    last = null;
+    const need = !state.reg && !state.pay ? "① 参加者リストと ② 入金リスト（Peatix）のCSVを入れて、「反映」を押してください。"
+      : !state.reg ? "① 参加者リストのCSVも入れて、「反映」を押してください。" : "② 入金リスト（Peatix）のCSVも入れて、「反映」を押してください。";
+    $("out").value = "";
+    $("counts").innerHTML = ""; $("sumCounts").innerHTML = "";
+    $("review").innerHTML = `<li class="emptyrow"><p class="empty">ここに、誰に何を確認すればいいかが出ます。<br>例：2重支払い・登録のない入金・招待者の食い違い・名前の表記ゆれ など<br>${need}</p></li>`;
+    $("summary").innerHTML = `<p class="empty">ここに、スレッドに貼る文章の中身が項目ごとの枠で出ます。<br>（ビジター登録なし／2重申込／2重支払い／ビジター名不明／未入金）<br>${need}</p>`;
+    $("payTable").innerHTML = `<tbody><tr><td><p class="empty">ここに、Peatixの入金1件ずつの判定（入金済・登録なし など）が出ます。</p></td></tr></tbody>`;
+    return;
+  }
+  const a = analyze(state.reg, state.pay); last = a;
+  $("out").value = compose(a, $("optMeeting").value, $("optAsOf").value);
+  renderReview(a.review);
+  renderSummary(a);
+  const paid = a.visitors.filter(v => v.pays.length).length;
+  const issues = a.review.filter(it => it.level !== "info").length;
+  $("counts").innerHTML =
+    `<span class="chip">登録 ${a.visitors.length}名</span>` +
+    `<span class="chip ok">入金済 ${paid}名</span>` +
+    `<span class="chip bad">未入金 ${a.result.unpaid.length}名</span>` +
+    (issues ? `<span class="chip warn">要確認 ${issues}件</span>` : "");
+  const lab = { ok: ["ok", "入金済"], dup: ["bad", "2重支払い"], unknown: ["warn", "ビジター名不明"], memberNoReg: ["warn", "登録なし（メンバー）"], noReg: ["warn", "登録なし"] };
+  const rows = a.payments.map(p => {
+    const [cls, t] = lab[p.status];
+    let to = "";
+    if (p.visitor) to = `${esc(p.visitors.map(x => x.name).join("・"))}<div class="sub">招待：${esc(p.visitor.inviter)}${p.how === "manual" ? "・手動で一致" : ""}${p.member ? "・" + esc(p.member) + "さんが支払い" : ""}</div>`;
+    else if (p.status === "unknown" && p.shown) to = `候補：${esc(p.shown.map(v => v.name).join("・"))}`;
+    else if (p.status === "memberNoReg") to = `<span class="sub">${esc(p.member)}さんの招待ビジターに対応する人がいません</span>`;
+    else if (p.fuzzy && p.fuzzy.length) to = `<span class="sub">似た名前：${esc(p.fuzzy.map(f => f.v.name).join("・"))}</span>`;
+    else to = `<span class="sub">参加者リストに該当なし</span>`;
+    return `<tr><td class="st"><span class="tag ${cls}">${t}</span></td>
+      <td>${esc(p.disp || p.kana)}<div class="sub">${esc(p.kana)}・${esc(p.date)}</div></td>
+      <td>${to}</td>
+      <td>${esc(p.inviterRaw)}</td></tr>`;
+  }).join("");
+  $("payTable").innerHTML = `<thead><tr><th>判定</th><th>入金者</th><th>照合したビジター</th><th>入金時の招待者</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+async function loadFile(file) {
+  const text = decodeBuffer(await file.arrayBuffer());
+  const rows = parseCSV(text), k = kind(rows);
+  if (!k) { $("out").value = `「${file.name}」は参加者リストにもPeatixの入金リストにも見えません。列名を確認してください。`; return; }
+  stageData(k, rows, file.name);
+}
+/* CSVを入れただけでは照合しない。「反映」を押したときに照合する */
+function stageData(k, rows, name) {
+  state.pending[k] = { rows, name };
+  const [nm, mt, dr] = k === "reg" ? ["regName", "regMeta", "dropReg"] : ["payName", "payMeta", "dropPay"];
+  $(nm).textContent = name;
+  $(mt).innerHTML = `${rows.length}${k === "reg" ? "名" : "件の入金"}　<span class="pend">未反映</span>`;
+  $(dr).classList.add("loaded");
+  updateApply();
+}
+const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+function updateApply() {
+  const n = Object.keys(state.pending).length;
+  const ex = !!state.exclDraft && !sameSet(state.exclDraft, state.excluded);
+  $("applyBtn").disabled = !n && !ex;
+  $("applyNote").textContent = n ? "新しいCSVが入っています。「反映」を押すと照合し直します。"
+    : ex ? "未入金リストの除外を変更しました。「反映」を押すと文章に反映します。" : "CSVを入れてから「反映」を押すと照合します。";
+  $("applyNote").classList.toggle("pending", n > 0 || ex);
+}
+function applyPending() {
+  const files = Object.keys(state.pending).length > 0;
+  // 参加者リストを入れ替えたら、除外は新しいリストでやり直し
+  if (state.pending.reg) { state.excluded = new Set(); state.exclDraft = null; }
+  if (state.exclDraft) { state.excluded = state.exclDraft; state.exclDraft = null; }
+  for (const [k, v] of Object.entries(state.pending)) setData(k, v.rows, v.name, true);
+  state.pending = {};
+  if (files) { delete $("optMeeting").dataset.touched; delete $("optAsOf").dataset.touched; defaults(); }
+  render(); updateApply();
+}
+function setData(k, rows, name, quiet) {
+  state.accepted.clear();
+  if (k === "reg") { state.reg = rows; state.regFileName = name; $("regName").textContent = name; $("regMeta").textContent = `${rows.length}名`; $("dropReg").classList.add("loaded"); }
+  else { state.pay = rows; state.payFileName = name; $("payName").textContent = name; $("payMeta").textContent = `${rows.length}件の入金`; $("dropPay").classList.add("loaded"); }
+  if (!quiet) { defaults(); render(); }
+}
+
+$("applyBtn").addEventListener("click", applyPending);
+$("summary").addEventListener("click", e => {
+  const b = e.target.closest("button.exbtn"); if (!b || !last) return;
+  const d = new Set(state.exclDraft || state.excluded);
+  d.has(b.dataset.vk) ? d.delete(b.dataset.vk) : d.add(b.dataset.vk);
+  state.exclDraft = d;
+  renderSummary(last); updateApply();
+});
+["regFile", "payFile"].forEach(id => $(id).addEventListener("change", e => { [...e.target.files].forEach(loadFile); e.target.value = ""; }));
+["dropReg", "dropPay"].forEach(id => {
+  const el = $(id);
+  el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("over"); });
+  el.addEventListener("dragleave", () => el.classList.remove("over"));
+  el.addEventListener("drop", e => { e.preventDefault(); e.stopPropagation(); el.classList.remove("over"); [...e.dataTransfer.files].forEach(loadFile); });
+});
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => { e.preventDefault(); [...(e.dataTransfer?.files || [])].forEach(loadFile); });
+["optMeeting", "optAsOf"].forEach(id => $(id).addEventListener("input", e => { e.target.dataset.touched = "1"; render(); }));
+$("showInfo").addEventListener("change", () => last && renderReview(last.review));
+$("review").addEventListener("click", e => {
+  const b = e.target.closest("button[data-key]"); if (!b) return;
+  const key = b.dataset.key;
+  if (b.dataset.undo === "1") state.accepted.delete(key);
+  else { const pi = key.split(":")[0]; [...state.accepted].forEach(k => { if (k.startsWith(pi + ":")) state.accepted.delete(k); }); state.accepted.add(key); }
+  render();
+});
+
+function copyText(text, btn, label) {
+  const done = ok => { btn.textContent = ok ? "コピーしました" : "コピーできませんでした。文字を選んでコピーしてください"; setTimeout(() => btn.textContent = label, ok ? 1600 : 3500); };
+  const fallback = () => {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.top = "0"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand("copy"); } catch (e) {}
+    ta.remove(); done(ok);
+  };
+  try { navigator.clipboard.writeText(text).then(() => done(true)).catch(fallback); } catch (e) { fallback(); }
+}
+$("copyBtn").addEventListener("click", () => $("out").value && copyText($("out").value, $("copyBtn"), "コピー"));
+$("copyReview").addEventListener("click", () => {
+  if (!last) return;
+  const showInfo = $("showInfo").checked;
+  const t = ["【要確認】"].concat(last.review.filter(it => showInfo || it.level !== "info").map(it => `・［${it.label}］${it.who}：${it.note}`)).join("\n");
+  copyText(t, $("copyReview"), "要確認リストをコピー");
+});
+
+// 最初は空の状態で開く
+render();
+</script>
